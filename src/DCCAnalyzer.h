@@ -21,6 +21,30 @@ enum eFrameState {
     FSTATE_PEBIT
 };
 
+/// @brief Represents a valid DCC packet (except a possibly wrong error detection byte)
+///
+/// This includes:
+/// * packet start bit
+/// * address data byte
+/// * data start bit(s)
+/// * data byte(s)
+/// * error detection byte
+/// * packet end bit
+struct DccPacket {
+	U64 start;
+	U8 address = 0;
+	std::vector<U8> data;
+	U8 edb = 0; // error detection byte
+	bool edb_ok = false;
+	U64 end;
+
+	void clear() {
+		data.clear();
+		edb = 0;
+		edb_ok = false;
+	}
+};
+
 class ANALYZER_EXPORT DCCAnalyzer : public Analyzer2
 {
 public:
@@ -45,6 +69,7 @@ protected: //functions
 	UINT GetNextBit(U64 *nSample);
     bool CheckPacketEndHold(U64 *nSample);
 	void PostFrame(U64 nStartSample, U64 nEndSample, eFrameType ft, U8 Flags, U64 Data1, U64 Data2);
+	void PostPacket(DccPacket dccPacket);
 	void Setup();
 
 protected: //vars

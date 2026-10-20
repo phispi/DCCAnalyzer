@@ -95,57 +95,18 @@ void DCCAnalyzer::PostFrame(U64 nStartSample, U64 nEndSample, eFrameType ft, U8 
 	frame.mType = ft;
 	frame.mFlags = Flags;
 	mResults->AddFrame(frame);
+	mResults->CommitResults();
+}
 
-// This is a new feature for the Saleae Analyzer that enables the Python debugging interface
-
-    FrameV2 framev2;
-
-    switch (ft)
-    {
-    case FRAME_PREAMBLE:    // 0,           nHBitVal/2
-        framev2.AddString("type", "preamble");                        
-        framev2.AddByte("data", (U8)Data1);
-        mResults->AddFrameV2( framev2, "preamble", nStartSample, nEndSample );
-        break;
-    case FRAME_PSBIT:        // 0
-        framev2.AddString("type", "psbit");                        
-        mResults->AddFrameV2( framev2, "psbit", nStartSample, nEndSample );
-        break;
-    case FRAME_ADBYTE:        // 0,           nVal
-        framev2.AddString("type", "adbyte");                        
-        framev2.AddByte("data", (U8)Data1);
-        mResults->AddFrameV2( framev2, "adbyte", nStartSample, nEndSample );
-        break;
-    case FRAME_DSBIT:        // 0
-        framev2.AddString("type", "dsbit");                        
-        mResults->AddFrameV2( framev2, "dsbit", nStartSample, nEndSample );
-        break;
-    case FRAME_DBYTE:        // 0,           nVal
-        framev2.AddString("type", "dbyte");                        
-        framev2.AddByte("data", (U8)Data1);
-        mResults->AddFrameV2( framev2, "dbyte", nStartSample, nEndSample );
-        break;
-    case FRAME_EDBYTE:    // nCurSample,  nVal
-        framev2.AddString("type", "edbyte");                        
-        framev2.AddByte("data", (U8)Data1);
-        mResults->AddFrameV2( framev2, "edbyte", nStartSample, nEndSample );
-        break;
-    case FRAME_PEBIT:         // End of packet bit
-        framev2.AddString("type", "pebit");                        
-        mResults->AddFrameV2( framev2, "pebit", nStartSample, nEndSample );
-        break;
-    case FRAME_END_ERR:
-        framev2.AddString("type", "error");                        
-        mResults->AddFrameV2( framev2, "packet end error", nStartSample, nEndSample );
-        break;
-    default:
-        framev2.AddString("type", "error");                        
-        mResults->AddFrameV2( framev2, "error", nStartSample, nEndSample );
-        break;
-    }
-
-    mResults->CommitResults();
-
+void DCCAnalyzer::PostPacket(DccPacket dccPacket)
+{
+	FrameV2 framev2;
+	framev2.AddByte("address", dccPacket.address);
+	framev2.AddByteArray("data", dccPacket.data.data(), dccPacket.data.size());
+	framev2.AddByte("edb", dccPacket.edb);
+	framev2.AddBoolean("edb ok", dccPacket.edb_ok);
+	mResults->AddFrameV2( framev2, "packet", dccPacket.start, dccPacket.end );
+	mResults->CommitResults();
 }
 
 void DCCAnalyzer::Setup()
@@ -202,6 +163,7 @@ void DCCAnalyzer::WorkerThread()
 	U64 nBitStartSample = 0;
     U64 nCutoutStart = 0;
 	U64 nTemp = nCurSample;
+	DccPacket dccPacket;
 	for (;;) {
 		nBitStartSample = nCurSample;
 		switch (ef)
@@ -264,6 +226,8 @@ void DCCAnalyzer::WorkerThread()
             nHBitCnt = 0;   // resets the preamble bit count
 			if (nHBitVal == 0) { // this is the start bit, now we are in sync
 				PostFrame(nFrameStart, nCurSample, FRAME_PSBIT, 0);
+				dccPacket.clear();
+				dccPacket.start = nFrameStart;
 				mResults->AddMarker(nFrameStart, AnalyzerResults::Start, mSettings->mInputChannel);
 				ReportProgress(nCurSample);
 				nBits = nVal = 0;
@@ -290,6 +254,7 @@ void DCCAnalyzer::WorkerThread()
 					nChecksum ^= nVal;
                     ef = FSTATE_DSBIT;
                     PostFrame(nFrameStart, nCurSample, FRAME_ADBYTE, 0, nVal);
+					dccPacket.address = nVal;
 					ReportProgress(nCurSample);
 					nFrameStart = nCurSample + 1;
 				}
@@ -336,10 +301,13 @@ void DCCAnalyzer::WorkerThread()
                     UINT nLABit = LookaheadNextHBit(&nTemp);
                     if (nLABit == 0) { //look for end of packet
                         PostFrame(nFrameStart, nCurSample, FRAME_DBYTE, 0, nVal);
+                        dccPacket.data.push_back(nVal);
                         ef = FSTATE_DSBIT;
                     } else if (nLABit == 1) {
                         nTemp = (nChecksum == 0) ? 0 : PACKET_ERROR_FLAG;
                         PostFrame(nFrameStart, nCurSample, FRAME_EDBYTE, nTemp, nVal);
+                        dccPacket.edb = nVal;
+                        dccPacket.edb_ok = (nChecksum == 0);
                         if (nTemp != 0){    // mark the error but pass on the packet.
                             mResults->AddMarker(nFrameStart, AnalyzerResults::ErrorX, mSettings->mInputChannel);
                             mResults->AddMarker(nCurSample, AnalyzerResults::ErrorSquare, mSettings->mInputChannel);
@@ -370,6 +338,8 @@ void DCCAnalyzer::WorkerThread()
             nHBitVal = GetNextBit(&nCurSample); // get next hbit
             nTemp = nCurSample;
             PostFrame(nFrameStart, nCurSample, FRAME_PEBIT, 0);
+            dccPacket.end = nCurSample;
+            PostPacket(dccPacket);
             mResults->AddMarker(nFrameStart, AnalyzerResults::Stop, mSettings->mInputChannel);
             ReportProgress(nCurSample);
             nFrameStart = nCurSample + 1;
